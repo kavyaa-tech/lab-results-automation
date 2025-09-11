@@ -1,0 +1,103 @@
+// Extract all data from the single Groq HTTP response input
+const httpResponse = $input.first().json;
+
+// Extract Groq content
+let groqContent = null;
+if (httpResponse.choices && httpResponse.choices.length > 0 && httpResponse.choices[0].message) {
+  groqContent = httpResponse.choices[0].message.content;
+}
+
+// Parse Groq JSON response
+let groqData = {};
+if (groqContent) {
+  try {
+    let cleanContent = groqContent
+      .replace(/```json\s*/gi, '')
+      .replace(/```\s*/g, '')
+      .trim();
+    
+    const jsonMatch = cleanContent.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      groqData = JSON.parse(jsonMatch[0]);
+    }
+  } catch (e) {
+    // Fallback regex extraction
+    const patientMessageMatch = groqContent.match(/"patientMessage":\s*"([^"]*(?:\\.[^"]*)*)"/);
+    const doctorMessageMatch = groqContent.match(/"doctorMessage":\s*"([^"]*(?:\\.[^"]*)*)"/);
+    
+    groqData = {
+      patientMessage: patientMessageMatch ? patientMessageMatch[1].replace(/\\"/g, '"') : "",
+      doctorMessage: doctorMessageMatch ? doctorMessageMatch[1].replace(/\\"/g, '"') : ""
+    };
+  }
+}
+
+// Extract patient information from the AI-generated messages
+function extractPatientInfo(patientMessage, doctorMessage) {
+  const info = {};
+  
+  // Extract patient name from messages
+  const nameMatch = (patientMessage + " " + doctorMessage).match(/(?:Hello |Patient )\b([A-Z][a-z]+)\b/);
+  if (nameMatch) {
+    info.patientName = nameMatch[1];
+  }
+  
+  // Extract test type from content
+  if (patientMessage.includes("blood test") || doctorMessage.includes("blood count")) {
+    info.test = "Complete Blood Count (CBC)";
+  } else if (patientMessage.includes("test results")) {
+    info.test = "Lab Test";
+  }
+  
+  // Extract test results from the messages
+  const results = {};
+  
+  // Extract WBC
+  const wbcMatch = (patientMessage + " " + doctorMessage).match(/(?:white blood cell count|WBC).*?(\d+\.?\d*)/i);
+  if (wbcMatch) results.WBC = parseFloat(wbcMatch[1]);
+  
+  // Extract RBC  
+  const rbcMatch = (patientMessage + " " + doctorMessage).match(/(?:red blood cell count|RBC).*?(\d+\.?\d*)/i);
+  if (rbcMatch) results.RBC = parseFloat(rbcMatch[1]);
+  
+  // Extract Hemoglobin
+  const hgbMatch = (patientMessage + " " + doctorMessage).match(/(?:hemoglobin.*?(\d+\.?\d*))/i);
+  if (hgbMatch) results.Hemoglobin = parseFloat(hgbMatch[1]);
+  
+  // Extract previous hemoglobin value
+  const prevHgbMatch = (patientMessage + " " + doctorMessage).match(/previous.*?(\d+\.?\d*)/i);
+  if (prevHgbMatch) results.Previous_Hemoglobin = parseFloat(prevHgbMatch[1]);
+  
+  info.results = results;
+  
+  // Extract medical history
+  const history = {};
+  if ((patientMessage + " " + doctorMessage).toLowerCase().includes("anemia")) {
+    history.anemia = "Previous history of anemia";
+  }
+  info.history = history;
+  
+  return info;
+}
+
+// Extract patient info from the AI messages
+const extractedInfo = extractPatientInfo(
+  groqData.patientMessage || "", 
+  groqData.doctorMessage || ""
+);
+
+// Return complete data
+return [{
+  json: {
+    ID: httpResponse.id || `manual_${Date.now()}`,
+    PatientName: extractedInfo.patientName || "",
+    PatientEmail: groqData.patientEmail || "",
+    DoctorEmail: groqData.doctorEmail || "",
+    Test: extractedInfo.test || "",
+    Results_JSON: JSON.stringify(extractedInfo.results || {}),
+    History_JSON: JSON.stringify(extractedInfo.history || {}),
+    PatientMessage: groqData.patientMessage || "",
+    DoctorMessage: groqData.doctorMessage || "",
+    Timestamp: new Date().toISOString(),
+  }
+}];
